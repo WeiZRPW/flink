@@ -43,6 +43,7 @@ import static org.mockito.Mockito.doThrow;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.times;
 import static org.mockito.Mockito.verify;
 import static org.mockito.Mockito.when;
 
@@ -87,14 +88,32 @@ public class RMQSinkTest {
 	public void openCallDeclaresQueueInStandardMode() throws Exception {
 		createRMQSink();
 
-		verify(channel).queueDeclare(QUEUE_NAME, false, false, false, null);
+		verify(channel).queueDeclare(QUEUE_NAME, true, false, false, null);
 	}
 
 	@Test
 	public void openCallDontDeclaresQueueInWithOptionsMode() throws Exception {
 		createRMQSinkWithOptions(false, false);
 
-		verify(channel, never()).queueDeclare(null, false, false, false, null);
+		verify(channel, never()).queueDeclare(null, true, false, false, null);
+	}
+
+	@Test
+	public void testOverrideConnection() throws Exception {
+		final Connection mockConnection = mock(Connection.class);
+		Channel channel = mock(Channel.class);
+		when(mockConnection.createChannel()).thenReturn(channel);
+
+		RMQSink<String> rmqSink = new RMQSink<String>(rmqConnectionConfig, QUEUE_NAME, serializationSchema) {
+			@Override
+			protected Connection setupConnection() throws Exception {
+				return mockConnection;
+			}
+		};
+
+		rmqSink.open(new Configuration());
+
+		verify(mockConnection, times(1)).createChannel();
 	}
 
 	@Test

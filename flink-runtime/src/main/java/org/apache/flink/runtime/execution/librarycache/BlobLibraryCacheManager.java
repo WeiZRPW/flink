@@ -21,7 +21,9 @@ package org.apache.flink.runtime.execution.librarycache;
 import org.apache.flink.api.common.JobID;
 import org.apache.flink.runtime.blob.PermanentBlobKey;
 import org.apache.flink.runtime.blob.PermanentBlobService;
+import org.apache.flink.runtime.rpc.FatalErrorHandler;
 import org.apache.flink.util.ExceptionUtils;
+import org.apache.flink.util.FlinkUserCodeClassLoader;
 import org.apache.flink.util.Preconditions;
 
 import org.slf4j.Logger;
@@ -40,6 +42,7 @@ import java.util.HashMap;
 import java.util.HashSet;
 import java.util.Map;
 import java.util.Set;
+import java.util.function.Consumer;
 import java.util.stream.Collectors;
 
 import static org.apache.flink.util.Preconditions.checkNotNull;
@@ -140,9 +143,25 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
 		 */
 		private final String[] alwaysParentFirstPatterns;
 
-		private DefaultClassLoaderFactory(FlinkUserCodeClassLoaders.ResolveOrder classLoaderResolveOrder, String[] alwaysParentFirstPatterns) {
+		/**
+		 * Class loading exception handler.
+		 */
+		private final Consumer<Throwable> classLoadingExceptionHandler;
+
+		/**
+		 * Test if classloader is used outside of job.
+		 */
+		private final boolean checkClassLoaderLeak;
+
+		private DefaultClassLoaderFactory(
+				FlinkUserCodeClassLoaders.ResolveOrder classLoaderResolveOrder,
+				String[] alwaysParentFirstPatterns,
+				Consumer<Throwable> classLoadingExceptionHandler,
+				boolean checkClassLoaderLeak) {
 			this.classLoaderResolveOrder = classLoaderResolveOrder;
 			this.alwaysParentFirstPatterns = alwaysParentFirstPatterns;
+			this.classLoadingExceptionHandler = classLoadingExceptionHandler;
+			this.checkClassLoaderLeak = checkClassLoaderLeak;
 		}
 
 		@Override
@@ -151,12 +170,32 @@ public class BlobLibraryCacheManager implements LibraryCacheManager {
 				classLoaderResolveOrder,
 				libraryURLs,
 				FlinkUserCodeClassLoaders.class.getClassLoader(),
-				alwaysParentFirstPatterns);
+				alwaysParentFirstPatterns,
+				classLoadingExceptionHandler,
+				checkClassLoaderLeak);
 		}
 	}
 
-	public static ClassLoaderFactory defaultClassLoaderFactory(FlinkUserCodeClassLoaders.ResolveOrder classLoaderResolveOrder, String[] alwaysParentFirstPatterns) {
-		return new DefaultClassLoaderFactory(classLoaderResolveOrder, alwaysParentFirstPatterns);
+	public static ClassLoaderFactory defaultClassLoaderFactory(
+			FlinkUserCodeClassLoaders.ResolveOrder classLoaderResolveOrder,
+			String[] alwaysParentFirstPatterns,
+			@Nullable FatalErrorHandler fatalErrorHandlerJvmMetaspaceOomError,
+			boolean checkClassLoaderLeak) {
+		return new DefaultClassLoaderFactory(
+			classLoaderResolveOrder,
+			alwaysParentFirstPatterns,
+			createClassLoadingExceptionHandler(fatalErrorHandlerJvmMetaspaceOomError),
+			checkClassLoaderLeak);
+	}
+
+	private static Consumer<Throwable> createClassLoadingExceptionHandler(
+			@Nullable FatalErrorHandler fatalErrorHandlerJvmMetaspaceOomError) {
+		return fatalErrorHandlerJvmMetaspaceOomError != null ?
+			classLoadingException -> {
+				if (ExceptionUtils.isMetaspaceOutOfMemoryError(classLoadingException)) {
+					fatalErrorHandlerJvmMetaspaceOomError.onFatalError(classLoadingException);
+				}
+			} : FlinkUserCodeClassLoader.NOOP_EXCEPTION_HANDLER;
 	}
 
 	// --------------------------------------------------------------------------------------------
